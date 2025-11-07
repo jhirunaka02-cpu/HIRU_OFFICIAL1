@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <link rel="icon" type="image/x-icon" href="md green.jpg">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon_Chess</title>
+<style>
+  body {
+    margin: 0;
+    background-color: #433b4e;
+    color: #6a00c0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    font-family: Arial, sans-serif;
+  }
+  #chessboard {
+    display: grid;
+    grid-template-columns: repeat(8, 80px);
+    grid-template-rows: repeat(8, 80px);
+    border: 3px solid #00aeff;
+  }
+  .cell {
+    width: 80px;
+    height: 80px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 48px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .light { background-color: #333; }
+  .dark { background-color: #000; }
+  .highlight { outline: 3px solid #25f312; }
+  .check { background-color: #8527ff !important; }
+</style>
+</head>
+<body>
+<div id="chessboard"></div>
+<script>
+const chessboard = document.getElementById('chessboard');
+const piecesUnicode = {
+  'bR':'♜','bN':'♞','bB':'♝','bQ':'♛','bK':'♚','bP':'♟',
+  'wR':'♖','wN':'♘','wB':'♗','wQ':'♕','wK':'♔','wP':'♙'
+};
+
+let board = [
+  ['bR','bN','bB','bQ','bK','bB','bN','bR'],
+  ['bP','bP','bP','bP','bP','bP','bP','bP'],
+  ['','','','','','','',''],
+  ['','','','','','','',''],
+  ['','','','','','','',''],
+  ['','','','','','','',''],
+  ['wP','wP','wP','wP','wP','wP','wP','wP'],
+  ['wR','wN','wB','wQ','wK','wB','wN','wR']
+];
+
+let turn = 'w';
+let selected = null;
+
+function renderBoard() {
+  chessboard.innerHTML = '';
+  for(let i=0;i<8;i++){
+    for(let j=0;j<8;j++){
+      const cell = document.createElement('div');
+      cell.classList.add('cell');
+      cell.classList.add((i+j)%2===0 ? 'light' : 'dark');
+      if(board[i][j]) cell.textContent = piecesUnicode[board[i][j]];
+      cell.dataset.row = i;
+      cell.dataset.col = j;
+      cell.addEventListener('click', () => selectCell(i,j,cell));
+      chessboard.appendChild(cell);
+    }
+  }
+  highlightKingInCheck();
+}
+
+function selectCell(row,col,cell){
+  const piece = board[row][col];
+  if(selected){
+    // Try to move
+    if(isValidMove(selected.row, selected.col, row, col)){
+      board[row][col] = board[selected.row][selected.col];
+      board[selected.row][selected.col] = '';
+      turn = turn === 'w' ? 'b' : 'w';
+    }
+    selected = null;
+    renderBoard();
+  } else if(piece && piece[0] === turn){
+    selected = {row,col};
+    cell.classList.add('highlight');
+  }
+}
+
+function isValidMove(sr, sc, dr, dc){
+  const piece = board[sr][sc];
+  const target = board[dr][dc];
+  if(target && target[0] === piece[0]) return false; // cannot capture own
+  const type = piece[1];
+  const deltaR = dr - sr;
+  const deltaC = dc - sc;
+  
+  switch(type){
+    case 'P': // Pawn
+      const dir = piece[0]==='w'?-1:1;
+      if(deltaC===0 && deltaR===dir && !target) return true;
+      if(deltaC===0 && deltaR===2*dir && ((sr===6 && piece[0]==='w')||(sr===1 && piece[0]==='b')) && !target && !board[sr+dir][sc]) return true;
+      if(Math.abs(deltaC)===1 && deltaR===dir && target && target[0]!==piece[0]) return true;
+      return false;
+    case 'R': // Rook
+      if(deltaR!==0 && deltaC!==0) return false;
+      return pathClear(sr, sc, dr, dc);
+    case 'N': // Knight
+      return (Math.abs(deltaR)==2 && Math.abs(deltaC)==1)||(Math.abs(deltaR)==1 && Math.abs(deltaC)==2);
+    case 'B': // Bishop
+      if(Math.abs(deltaR)!==Math.abs(deltaC)) return false;
+      return pathClear(sr, sc, dr, dc);
+    case 'Q': // Queen
+      if(deltaR===0 || deltaC===0 || Math.abs(deltaR)===Math.abs(deltaC)) return pathClear(sr, sc, dr, dc);
+      return false;
+    case 'K': // King
+      return Math.abs(deltaR)<=1 && Math.abs(deltaC)<=1;
+  }
+  return false;
+}
+
+function pathClear(sr, sc, dr, dc){
+  const stepR = dr===sr?0:(dr>sr?1:-1);
+  const stepC = dc===sc?0:(dc>sc?1:-1);
+  let r = sr + stepR, c = sc + stepC;
+  while(r !== dr || c !== dc){
+    if(board[r][c]!=='') return false;
+    r+=stepR;
+    c+=stepC;
+  }
+  return true;
+}
+
+function highlightKingInCheck(){
+  let kingPos = null;
+  for(let i=0;i<8;i++){
+    for(let j=0;j<8;j++){
+      if(board[i][j]===turn+'K') kingPos = {i,j};
+    }
+  }
+  if(!kingPos) return;
+  // check if any opponent piece can move to king
+  for(let i=0;i<8;i++){
+    for(let j=0;j<8;j++){
+      const piece = board[i][j];
+      if(piece && piece[0]!==turn && isValidMove(i,j,kingPos.i,kingPos.j)){
+        document.querySelectorAll('.cell')[kingPos.i*8+kingPos.j].classList.add('check');
+        return;
+      }
+    }
+  }
+}
+
+renderBoard();
+</script>
+</body>
+</html>

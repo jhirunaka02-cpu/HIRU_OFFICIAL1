@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <link rel="icon" type="image/x-icon" href="md green.jpg">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Arena Fight </title>
+<style>
+  :root{
+    --bg:#0a0f14; --panel:#0f1620; --accent:#7c3aed; --hit:#ff6b6b; --hp:#22c55e; --muted:#9aa6b2; --text:#dbeafe;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial}
+  .wrap{display:flex;align-items:center;justify-content:center;height:100%;padding:16px}
+  .card{width:1000px;max-width:98%;border-radius:12px;padding:16px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));box-shadow:0 10px 40px rgba(2,6,11,0.7)}
+  canvas{display:block;width:100%;height:auto;border-radius:8px;background:linear-gradient(180deg,#041018,#021018);}
+  .controls{display:flex;gap:10px;align-items:center;margin-top:10px}
+  .btn{background:transparent;border:1px solid rgba(255,255,255,0.06);padding:8px 12px;border-radius:8px;color:var(--text);cursor:pointer}
+  .btn:hover{border-color:var(--accent)}
+  .info{margin-left:auto;color:var(--muted);font-size:13px}
+  .legend{margin-top:8px;color:var(--muted);font-size:13px}
+  @media (max-width:720px){ .card{padding:10px} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <canvas id="game" width="960" height="360" aria-label="2D fighting game"></canvas>
+      <div class="controls">
+        <div class="btn" id="startBtn">Start / Restart</div>
+        <div class="btn" id="modeBtn">Mode: 1P vs AI</div>
+        <div class="btn" id="muteBtn">Mute: Off</div>
+        <div class="info">First to 3 rounds wins</div>
+      </div>
+      <div class="legend">Player1 &nbsp; A/D = Move · W = Jump · S = Block · F = Light · G = Heavy &nbsp; | &nbsp; Player2 &nbsp; ←/→ = Move · ↑ = Jump · ↓ = Block · K = Light · L = Heavy</div>
+    </div>
+  </div>
+
+<script>
+/* Simple 2D fighting game — single-file. Dark theme.
+   - Player1: A/D move, W jump, S block, F light, G heavy
+   - Player2: ArrowLeft/Right move, ArrowUp jump, ArrowDown block, K light, L heavy
+   - Mode toggle: 1P vs AI or 2P local
+*/
+(function(){
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  // Game state
+  let running = false;
+  let mode = '1P'; // '1P' or '2P'
+  let mute = false;
+  let roundsToWin = 3;
+  let round = 1;
+  let p1Wins = 0, p2Wins = 0;
+
+  // Audio
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  function sfx(freq=440, t=0.06){ if(mute) return; const o = audioCtx.createOscillator(); const g = audioCtx.createGain(); o.type='sine'; o.frequency.value=freq; o.connect(g); g.connect(audioCtx.destination); g.gain.setValueAtTime(0.0001,audioCtx.currentTime); g.gain.exponentialRampToValueAtTime(0.12,audioCtx.currentTime+0.01); o.start(); g.gain.exponentialRampToValueAtTime(0.0001,audioCtx.currentTime+t); o.stop(audioCtx.currentTime+t+0.02); }
+
+  // Player prototype
+  function createPlayer(x, color){
+    return {
+      x, y: H - 110, w: 48, h: 88, vx:0, vy:0, dir:1, color, hp:100, grounded:true,
+      blocking:false, attackCooldown:0, attackBox:null, state:'idle'
+    };
+  }
+
+  const p1 = createPlayer(140, '#7c3aed');
+  const p2 = createPlayer(W - 188, '#22c55e');
+  p2.dir = -1;
+
+  // Input
+  const keys = {};
+  window.addEventListener('keydown', (e)=>{ keys[e.code] = true; if(['Space','KeyR'].includes(e.code)) e.preventDefault(); });
+  window.addEventListener('keyup', (e)=>{ keys[e.code] = false; });
+
+  // AI (basic)
+  function aiTick(){
+    if(mode !== '1P' || running === false) return;
+    // p2 will try to maintain distance and attack
+    const dx = p1.x - p2.x;
+    if(Math.abs(dx) > 140) p2.vx = dx > 0 ? 1.6 : -1.6; else p2.vx = 0;
+    // if close, attack sometimes
+    if(Math.abs(dx) < 120 && Math.random() < 0.02 && p2.attackCooldown <= 0){ p2.attackType = Math.random()<0.6? 'light':'heavy'; }
+    // random jump
+    if(p2.grounded && Math.random() < 0.005) { p2.vy = -12; p2.grounded=false; }
+    // simple block if low hp
+    p2.blocking = (p2.hp < 30 && Math.random() < 0.3);
+  }
+
+  // Attack handling
+  function tryAttack(attacker, type){
+    if(attacker.attackCooldown > 0) return;
+    const dmg = type==='light' ? 8 : 16;
+    const reach = attacker.w + (type==='heavy'?48:32);
+    attacker.attackCooldown = type==='light'?20:40;
+    attacker.state = type === 'light' ? 'punch' : 'smash';
+    // define attack box in front
+    const ax = attacker.x + (attacker.dir > 0 ? attacker.w : -reach);
+    attacker.attackBox = { x: ax, y: attacker.y + 12, w: reach, h: attacker.h - 20, dmg, type };
+    sfx(type==='light'?900:600, 0.06);
+  }
+
+  // Collision
+  function rectOverlap(a,b){ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+  function update(){
+    if(!running) return;
+    frame++;
+    // AI decision
+    aiTick();
+
+    // Player 1 controls
+    p1.vx = 0;
+    if(keys['KeyA']) p1.vx = -3.2, p1.dir = -1;
+    if(keys['KeyD']) p1.vx = 3.2, p1.dir = 1;
+    if(keys['KeyW'] && p1.grounded){ p1.vy = -13; p1.grounded = false; sfx(1000,0.04); }
+    p1.blocking = !!keys['KeyS'];
+    if(keys['KeyF']) tryAttack(p1,'light');
+    if(keys['KeyG']) tryAttack(p1,'heavy');
+
+    // Player 2 controls (or AI)
+    if(mode === '2P'){
+      p2.vx = 0;
+      if(keys['ArrowLeft']) p2.vx = -3.2, p2.dir = -1;
+      if(keys['ArrowRight']) p2.vx = 3.2, p2.dir = 1;
+      if(keys['ArrowUp'] && p2.grounded){ p2.vy = -13; p2.grounded=false; sfx(1000,0.04); }
+      p2.blocking = !!keys['ArrowDown'];
+      if(keys['KeyK']) tryAttack(p2,'light');
+      if(keys['KeyL']) tryAttack(p2,'heavy');
+    } else {
+      // AI sets vx in aiTick; handle attack decision
+      if(p2.attackType){ tryAttack(p2, p2.attackType); p2.attackType = null; }
+    }
+
+    // apply movement
+    [p1,p2].forEach(p=>{
+      // reduce attack cooldown
+      if(p.attackCooldown > 0) p.attackCooldown--;
+      // movement
+      p.x += p.vx;
+      // simple floor
+      p.vy += 0.7;
+      p.y += p.vy;
+      if(p.y > H - 110){ p.y = H - 110; p.vy = 0; p.grounded = true; }
+      // bounds
+      p.x = Math.max(40, Math.min(W - p.w - 40, p.x));
+      // face towards opponent if not moving
+      const other = p === p1 ? p2 : p1;
+      if(p.vx === 0) p.dir = other.x > p.x ? 1 : -1;
+    });
+
+    // attack resolution
+    [p1,p2].forEach(att=>{
+      if(att.attackBox){
+        const target = att === p1 ? p2 : p1;
+        if(rectOverlap(att.attackBox, {x:target.x,y:target.y,w:target.w,h:target.h})){
+          // if target blocking and facing attacker reduce damage
+          const facing = (target.dir === -1 && att.attackBox.x > target.x) || (target.dir === 1 && att.attackBox.x < target.x + target.w);
+          let dmg = att.attackBox.dmg;
+          if(target.blocking && facing){ dmg = Math.max(1, Math.floor(dmg * 0.25)); sfx(2000,0.03); }
+          target.hp -= dmg;
+          // hit stun
+          target.vx = -att.dir * (att.attackBox.type === 'heavy' ? 6 : 3);
+          target.vy = -4;
+          // visual effect
+          att.hitFlash = 8;
+          // remove attack box after hit to avoid multi-hit
+          att.attackBox = null;
+          sfx(400,0.05);
+        }
+        // expire attack box after some frames
+        if(att.attackBox) { if(!att.attackBox.life) att.attackBox.life = 12; att.attackBox.life--; if(att.attackBox.life <= 0) att.attackBox = null; }
+      }
+    });
+
+    // reduce hitFlash
+    [p1,p2].forEach(p=>{ if(p.hitFlash) p.hitFlash--; });
+
+    // check death
+    if(p1.hp <= 0 || p2.hp <= 0){ running = false; if(p1.hp <= 0) p2Wins++; if(p2.hp <= 0) p1Wins++; setTimeout(()=>{ if(p1Wins >= roundsToWin || p2Wins >= roundsToWin){ // match over
+          // show final and reset counters after short pause
+        } else { startRound(); } }, 800); }
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    // bg gradient
+    const g = ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,'#031018'); g.addColorStop(1,'#041018'); ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    // arena decorations
+    ctx.fillStyle = 'rgba(255,255,255,0.02)'; for(let i=0;i<W;i+=60){ ctx.fillRect(i, H-120, 40, 1); }
+
+    // ground
+    ctx.fillStyle = '#071826'; ctx.fillRect(0, H-60, W, 60);
+
+    // draw players
+    drawPlayer(p1);
+    drawPlayer(p2);
+
+    // HUD: HP bars
+    drawBar(30,20,350,18,p1.hp, '#7c3aed');
+    drawBar(W-380,20,350,18,p2.hp, '#22c55e');
+    // round info
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = '16px system-ui'; ctx.fillText(`Round ${round} — P1: ${p1Wins}  P2: ${p2Wins}`, W/2 - 80, 30);
+
+    // messages when not running
+    if(!running){ ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(W/2 - 220, H/2 - 32, 440, 64); ctx.fillStyle = '#dbeafe'; ctx.font = '18px system-ui'; ctx.fillText('Press Start to begin', W/2 - 88, H/2 + 6); }
+  }
+
+  function drawPlayer(p){
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(p.x+6, p.y + p.h - 6, p.w, 6);
+    // body
+    ctx.fillStyle = p.hitFlash ? 'var(--hit)' : p.color; ctx.fillRect(p.x, p.y, p.w, p.h);
+    // face (eye)
+    ctx.fillStyle = '#001'; ctx.fillRect(p.x + (p.dir>0? p.w-10:6), p.y + 18, 6, 6);
+    // attack box (debug)
+    if(p.attackBox){ ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.strokeRect(p.attackBox.x, p.attackBox.y, p.attackBox.w, p.attackBox.h); }
+  }
+
+  function drawBar(x,y,w,h,val,color){
+    ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(x,y,w,h);
+    ctx.fillStyle = color; ctx.fillRect(x,y, Math.max(0, w * (val/100)), h);
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.strokeRect(x,y,w,h);
+  }
+
+  // Round start/reset
+  function startRound(){
+    round++;
+    p1.hp = 100; p2.hp = 100; p1.x = 140; p2.x = W - 188; p1.y = p2.y = H - 110; p1.vx = p2.vx = 0; p1.vy = p2.vy = 0; p1.hitFlash = p2.hitFlash = 0; running = true;
+  }
+
+  function startMatch(){
+    round = 1; p1Wins = 0; p2Wins = 0; startRound();
+  }
+
+  // Game loop
+  let frame = 0;
+  function loop(){ update(); draw(); requestAnimationFrame(loop); }
+  loop();
+
+  // UI buttons
+  document.getElementById('startBtn').addEventListener('click', ()=>{ startMatch(); });
+  document.getElementById('modeBtn').addEventListener('click', ()=>{ mode = mode === '1P' ? '2P' : '1P'; document.getElementById('modeBtn').textContent = 'Mode: ' + (mode === '1P'? '1P vs AI':'2P local'); });
+  document.getElementById('muteBtn').addEventListener('click', ()=>{ mute = !mute; document.getElementById('muteBtn').textContent = 'Mute: ' + (mute? 'On':'Off'); });
+
+  // responsive
+  function fitCanvas(){ const scale = Math.min(window.innerWidth*0.94 / W, window.innerHeight*0.78 / H); canvas.style.width = Math.round(W * scale) + 'px'; canvas.style.height = Math.round(H * scale) + 'px'; }
+  window.addEventListener('resize', fitCanvas); fitCanvas();
+
+  // initial draw
+  running = false; 
+})();
+</script>
+</body>
+</html>
